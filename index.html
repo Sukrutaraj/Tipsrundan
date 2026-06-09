@@ -732,5 +732,98 @@ function downloadPDF(){
     <button class="qr-cl" onclick="document.getElementById('qr-modal').classList.remove('on')">Stäng</button>
   </div>
 </div>
+
+<script>
+/* ===== NY QUIZ-LÄNK ===== */
+async function createLink(){
+
+updateData();
+
+const id=Date.now();
+const basePath="quiz-"+id;
+const repo="Sukrutaraj/checklist-pages";
+
+let questionsJson = JSON.stringify(quizData.questions);
+
+let sharedHtml=`
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<style>
+body{font-family:sans-serif;background:#f5f5f5;text-align:center;padding:20px;max-width:800px;margin:auto;}
+.card{background:white;padding:25px;border-radius:20px;}
+button{display:block;width:100%;padding:18px;margin-top:15px;border:none;border-radius:15px;background:#eee;font-size:18px;}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>${quizData.title}</h1>
+<h2 id="counter"></h2>
+<div id="question"></div>
+<div id="answers"></div>
+</div>
+
+<script>
+
+let questions=`+questionsJson+`;
+let current=0;
+let points=0;
+
+function renderQuestion(){
+
+let q=questions[current];
+
+document.getElementById("counter").innerHTML=
+"Fråga "+(current+1)+" av "+questions.length;
+
+document.getElementById("question").innerHTML=
+"<h2>"+q.text+"</h2>";
+
+document.getElementById("answers").innerHTML=
+"<button onclick=\"checkAnswer('1')\">1. "+q.answer1+"</button>"+
+"<button onclick=\"checkAnswer('X')\">X. "+q.answerX+"</button>"+
+"<button onclick=\"checkAnswer('2')\">2. "+q.answer2+"</button>";
+
+}
+
+function checkAnswer(a){
+
+if(a===questions[current].correct) points++;
+
+current++;
+
+if(current>=questions.length){
+
+document.querySelector(".card").innerHTML=
+"<h1>Klart!</h1><h2>"+points+" av "+questions.length+" rätt</h2>";
+
+}
+else renderQuestion();
+
+}
+
+renderQuestion();
+
+<\/script>
+</body>
+</html>
+`;
+
+await uploadFile(
+basePath+".html",
+btoa(unescape(encodeURIComponent(sharedHtml))),
+repo
+);
+
+let url="https://sukrutaraj.github.io/checklist-pages/"+basePath+".html";
+
+navigator.clipboard.writeText(url);
+
+showQR(url,quizData.title);
+
+}
+</script>
 </body>
 </html>
