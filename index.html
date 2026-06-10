@@ -178,8 +178,13 @@ button:active, .smallBtn:active {
 let quizData = { title:"", questions:[] };
 
 let stream = null;
-let recorder = null;
-let chunks = [];
+let audioCtx = null;
+let recProcessor = null;
+let recSource = null;
+let recSilent = null;
+let recBuffers = [];
+let recSampleRate = 44100;
+let recordingIndex = -1;
 
 /* ===== UPLOAD VIA VERCEL ===== */
 async function uploadFile(path, content, repo) {
@@ -231,72 +236,146 @@ async function createLink(){
 
   try {
 
-    // Ladda upp bilder och ljud, bygg steg-HTML
-    let questionsHtml = "";
-
+    // Upload images and build questions array with imgUrl
+    const uploadedQuestions = [];
     for(let i = 0; i < quizData.questions.length; i++){
       const s = quizData.questions[i];
-      if(!s.text && !s.img && !s.audio) continue;
-
-      let questionContent = "<div class='question'>";
-      questionContent += "<input type='checkbox' onchange='toggleStep(this)'>";
-      questionContent += "<div class='text'><b>" + (i+1) + ". " + (s.text||"") + "</b><br>";
-
+      if(!s.text && !s.answer1) continue;
+      let imgUrl = "";
       if(s.img){
         const imgName = basePath + "-img-" + i + ".jpg";
-        const base64 = s.img.split(",")[1];
-        await uploadFile(imgName, base64, repo);
+        await uploadFile(imgName, s.img.split(",")[1], repo);
         await new Promise(r=>setTimeout(r,300));
-        questionContent += "<img src='https://sukrutaraj.github.io/checklist-pages/" + imgName + "'><br>";
+        imgUrl = "https://sukrutaraj.github.io/checklist-pages/" + imgName;
       }
-
+      let audioUrl = "";
       if(s.audio){
-        const audioName = basePath + "-audio-" + i + ".webm";
-        const base64 = s.audio.split(",")[1];
-        await uploadFile(audioName, base64, repo);
+        // Behåll inspelningens format (webm/mp4/ogg) för bästa uppspelning
+        const mime = (s.audio.match(/^data:audio\/([a-z0-9.+-]+)/i) || [])[1] || "webm";
+        let ext = "webm";
+        if(mime.indexOf("mp4") >= 0 || mime.indexOf("mpeg") >= 0 || mime.indexOf("aac") >= 0) ext = "mp4";
+        else if(mime.indexOf("ogg") >= 0) ext = "ogg";
+        else if(mime.indexOf("wav") >= 0) ext = "wav";
+        const audioName = basePath + "-audio-" + i + "." + ext;
+        await uploadFile(audioName, s.audio.split(",")[1], repo);
         await new Promise(r=>setTimeout(r,300));
-        questionContent += "<button onclick=\"new Audio('https://sukrutaraj.github.io/checklist-pages/" + audioName + "').play()\">🔊 Spela</button>";
+        audioUrl = "https://sukrutaraj.github.io/checklist-pages/" + audioName;
       }
-
-      questionContent += "</div></div>";
-      questionsHtml += questionContent;
+      uploadedQuestions.push({
+        text:     s.text    || "",
+        answer1:  s.answer1 || "",
+        answerX:  s.answerX || "",
+        answer2:  s.answer2 || "",
+        correct:  s.correct || "1",
+        imgUrl:   imgUrl,
+        audioUrl: audioUrl
+      });
     }
 
     const safeTitle = quizData.title.replace(/</g,"&lt;").replace(/>/g,"&gt;");
 
-    // CSS för den delade sidan
+    // CSS för quiz-sidan
     const css = [
-      "body{font-family:sans-serif;padding:20px;background:#f5f5f5;max-width:800px;margin:auto;}",
-      "h2{text-align:center;}",
-      ".question{background:white;padding:12px;margin:10px 0;border-radius:10px;display:flex;gap:12px;align-items:flex-start;}",
-      ".question img{max-width:140px;border-radius:8px;}",
-      ".completed{background:#e5f7e5;opacity:0.75;}",
-      ".text{flex:1;font-size:16px;}",
-      ".progress{text-align:center;font-size:18px;margin-top:20px;font-weight:bold;}",
-      "input[type=checkbox]{width:32px;height:32px;margin-top:4px;cursor:pointer;}",
-      "button{padding:8px 16px;border-radius:8px;border:none;background:#eee;cursor:pointer;font-size:15px;margin-top:6px;}",
-      ".reset-btn{display:block;margin:20px auto;padding:12px 24px;background:#1976D2;color:white;border:none;border-radius:10px;font-size:16px;cursor:pointer;}"
+      "body{font-family:sans-serif;background:#f5f5f5;text-align:center;padding:20px;max-width:800px;margin:auto;}",
+      ".card{background:white;padding:25px;border-radius:20px;box-shadow:0 4px 16px rgba(0,0,0,0.08);}",
+      "h1{font-size:22px;margin-bottom:4px;}",
+      "#counter{font-size:14px;color:#888;margin-bottom:16px;}",
+      "#question h2{font-size:19px;margin-bottom:8px;}",
+      "#question img{max-width:100%;max-height:200px;border-radius:12px;margin:8px auto;display:block;}",
+      ".ans-btn{display:block;width:100%;padding:16px;margin-top:12px;border:none;border-radius:14px;background:#eee;font-size:17px;cursor:pointer;transition:background 0.2s;text-align:left;}",
+      ".ans-btn.correct{background:#4CAF50;color:white;font-weight:bold;}",
+      ".ans-btn.wrong{background:#f44336;color:white;}",
+      ".ans-btn.reveal{background:#e8f5e9;color:#2e7d32;font-weight:bold;}",
+      ".feedback{margin-top:16px;font-size:22px;font-weight:bold;min-height:28px;}",
+      ".feedback.ok{color:#4CAF50;}",
+      ".feedback.fail{color:#f44336;}",
+      ".next-btn{margin-top:16px;padding:14px 32px;background:#1976D2;color:white;border:none;border-radius:50px;font-size:16px;cursor:pointer;display:none;}",
+      ".progress{height:6px;background:#eee;border-radius:3px;margin-bottom:20px;}",
+      ".progress-bar{height:6px;background:#4CAF50;border-radius:3px;transition:width 0.4s;}",
+      ".result-emoji{font-size:60px;margin:16px 0;}"
     ].join("\n");
 
-    // JavaScript för den delade sidan
-    const scriptLines = [
-      "function toggleStep(el){",
-      "  var question=el.closest('.question');",
-      "  question.classList.toggle('completed',el.checked);",
-      "  updateProgress();",
-      "}",
-      "function updateProgress(){",
-      "  var total=document.querySelectorAll('.question').length;",
-      "  var done=document.querySelectorAll('.question input:checked').length;",
-      "  document.getElementById('progressText').textContent=done+' av '+total+' klara';",
-      "}",
-      "function resetChecklist(){",
-      "  document.querySelectorAll('input[type=\"checkbox\"]').forEach(function(c){c.checked=false;});",
-      "  document.querySelectorAll('.question').forEach(function(d){d.classList.remove('completed');});",
-      "  updateProgress();",
-      "}",
-      "updateProgress();"
-    ].join("\n");
+    // Frågorna bäddas in säkert som JSON
+    const questionsJson = JSON.stringify(uploadedQuestions).replace(/<\/script>/g, "<\\/script>");
+    const titleJson = JSON.stringify(quizData.title || "Tipsrunda");
+
+    // JavaScript för quiz-sidan (spelaren)
+    const scriptLines = `
+var questions = ${questionsJson};
+var quizTitle = ${titleJson};
+var current = 0, points = 0, answered = false;
+document.getElementById('quiz-title').textContent = quizTitle;
+
+function renderQuestion(){
+  answered = false;
+  var fb = document.getElementById('feedback');
+  fb.textContent = '';
+  fb.className = 'feedback';
+  document.getElementById('next-btn').style.display = 'none';
+  var q = questions[current];
+  var pct = Math.round((current / questions.length) * 100);
+  document.getElementById('prog-bar').style.width = pct + '%';
+  document.getElementById('counter').textContent = 'Fråga ' + (current + 1) + ' av ' + questions.length;
+  var qHtml = '<h2>' + q.text + '</h2>';
+  if(q.imgUrl){ qHtml += '<img src="' + q.imgUrl + '" alt="frågebild">'; }
+  if(q.audioUrl){ qHtml += '<audio controls preload="metadata" src="' + q.audioUrl + '" style="width:100%;margin-top:10px;">Din webbläsare kan inte spela upp ljudet.</audio>'; }
+  document.getElementById('question').innerHTML = qHtml;
+  var btns = [
+    {val:'1', label:'1. ' + q.answer1},
+    {val:'X', label:'X. ' + q.answerX},
+    {val:'2', label:'2. ' + q.answer2}
+  ];
+  var ans = document.getElementById('answers');
+  ans.innerHTML = '';
+  btns.forEach(function(b){
+    var btn = document.createElement('button');
+    btn.className = 'ans-btn';
+    btn.id = 'btn-' + b.val;
+    btn.textContent = b.label;
+    btn.onclick = function(){ checkAnswer(b.val); };
+    ans.appendChild(btn);
+  });
+}
+
+function checkAnswer(a){
+  if(answered) return;
+  answered = true;
+  var q = questions[current];
+  var isRight = (a === q.correct);
+  if(isRight) points++;
+  var cb = document.getElementById('btn-' + a);
+  if(cb) cb.className = 'ans-btn ' + (isRight ? 'correct' : 'wrong');
+  if(!isRight){
+    var rb = document.getElementById('btn-' + q.correct);
+    if(rb) rb.className = 'ans-btn reveal';
+  }
+  var fb = document.getElementById('feedback');
+  fb.textContent = isRight ? '✅ Rätt!' : '❌ Fel!';
+  fb.className = 'feedback ' + (isRight ? 'ok' : 'fail');
+  var nb = document.getElementById('next-btn');
+  nb.style.display = 'inline-block';
+  nb.textContent = (current >= questions.length - 1) ? 'Se resultat →' : 'Nästa fråga →';
+}
+
+function nextQuestion(){
+  current++;
+  if(current >= questions.length){ showResult(); }
+  else { renderQuestion(); }
+}
+
+function showResult(){
+  var pct = Math.round((points / questions.length) * 100);
+  var emoji = pct === 100 ? '🏆' : pct >= 70 ? '🎉' : pct >= 40 ? '👍' : '💪';
+  document.querySelector('.card').innerHTML =
+    '<div class="result-emoji">' + emoji + '</div>' +
+    '<h1>Klart!</h1>' +
+    '<h2>' + points + ' av ' + questions.length + ' rätt</h2>' +
+    '<p style="color:#888;font-size:14px;">' + pct + '% rätt</p>' +
+    '<button class="next-btn" style="display:inline-block;background:#1976D2;" onclick="location.reload()">Spela igen 🔄</button>';
+}
+
+renderQuestion();
+`;
 
     // Bygg den delade HTML-sidan med säker strängsammansättning
     const sharedHtml = [
@@ -309,12 +388,15 @@ async function createLink(){
       "<style>", css, "</style>",
       "</head>",
       "<body>",
-      "<h2>" + safeTitle + "</h2>",
-      "<div id='questions'>",
-      questionsHtml,
+      "<div class='card'>",
+      "<h1 id='quiz-title'></h1>",
+      "<div class='progress'><div class='progress-bar' id='prog-bar' style='width:0%'></div></div>",
+      "<div id='counter'></div>",
+      "<div id='question'></div>",
+      "<div id='answers'></div>",
+      "<div class='feedback' id='feedback'></div>",
+      "<button class='next-btn' id='next-btn' onclick='nextQuestion()'>Nästa fråga →</button>",
       "</div>",
-      "<div class='progress' id='progressText'>0 av 0 klara</div>",
-      "<button class='reset-btn' onclick='resetChecklist()'>🔄 Återställ</button>",
       "<script>",
       scriptLines,
       "<" + "/script>",
@@ -369,7 +451,7 @@ function render(){
     div.className="section question";
 
     div.innerHTML=`
-      <b>Steg ${i+1}</b><br>
+      <b>Fråga ${i+1}</b><br>
 
       <input value="${question.text||''}" placeholder="Skriv frågan"
       oninput="quizData.questions[${i}].text=this.value">
@@ -422,7 +504,7 @@ function render(){
 
 /* ===== STEG ===== */
 function addStep(){
-  quizData.questions.push({text:"",img:"",audio:""});
+  quizData.questions.push({text:"",img:"",audio:"",answer1:"",answerX:"",answer2:"",correct:"1"});
   render();
 }
 
@@ -473,31 +555,121 @@ function loadImage(e,i){
   reader.readAsDataURL(file);
 }
 
-/* ===== RECORD ===== */
+/* ===== RECORD (WAV – fungerar på iPhone, iPad och Android) ===== */
 function toggleRec(i){
-  if(recorder && recorder.state === "recording"){
-    recorder.stop();
-    const btn = document.getElementById("rec-btn-" + i);
-    if(btn){ btn.textContent = "🎤 Spela in"; btn.style.background = "#eee"; }
+  if(recordingIndex === i){
+    stopRec();
+  } else if(recordingIndex >= 0){
+    stopRec();
+    startRec(i);
   } else {
     startRec(i);
   }
 }
 
 async function startRec(i){
-  await initMic();
-  chunks = [];
-  recorder = new MediaRecorder(stream);
-  recorder.ondataavailable = e => chunks.push(e.data);
-  recorder.onstop = () => {
-    const blob = new Blob(chunks, { type: "audio/webm" });
-    const reader = new FileReader();
-    reader.onload = () => { quizData.questions[i].audio = reader.result; render(); };
-    reader.readAsDataURL(blob);
-  };
-  recorder.start();
-  const btn = document.getElementById("rec-btn-" + i);
-  if(btn){ btn.textContent = "⏹ Stoppa"; btn.style.background = "#ffcccc"; }
+  try{
+    // AudioContext måste skapas/återupptas vid ett knapptryck (krav på iOS)
+    if(!audioCtx){ audioCtx = new (window.AudioContext || window.webkitAudioContext)(); }
+    if(audioCtx.state === "suspended"){ await audioCtx.resume(); }
+    await initMic();
+
+    recSampleRate = audioCtx.sampleRate;
+    recBuffers = [];
+    recSource = audioCtx.createMediaStreamSource(stream);
+    recProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
+    recProcessor.onaudioprocess = function(e){
+      recBuffers.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+    };
+    // Tyst gren så att inspelningen inte hörs i högtalaren (undviker rundgång)
+    recSilent = audioCtx.createGain();
+    recSilent.gain.value = 0;
+    recSource.connect(recProcessor);
+    recProcessor.connect(recSilent);
+    recSilent.connect(audioCtx.destination);
+
+    recordingIndex = i;
+    const btn = document.getElementById("rec-btn-" + i);
+    if(btn){ btn.textContent = "⏹ Stoppa"; btn.style.background = "#ffcccc"; }
+  }catch(err){
+    recordingIndex = -1;
+    alert("Kunde inte starta inspelning: " + err.message);
+  }
+}
+
+function stopRec(){
+  const i = recordingIndex;
+  recordingIndex = -1;
+  try{
+    if(recProcessor){ recProcessor.onaudioprocess = null; recProcessor.disconnect(); }
+    if(recSource){ recSource.disconnect(); }
+    if(recSilent){ recSilent.disconnect(); }
+  }catch(e){}
+  if(i < 0) return;
+
+  // Slå ihop alla PCM-bitar
+  let total = 0;
+  for(const b of recBuffers){ total += b.length; }
+  const pcm = new Float32Array(total);
+  let off = 0;
+  for(const b of recBuffers){ pcm.set(b, off); off += b.length; }
+
+  // Nedsampla till 16 kHz mono för mindre filstorlek (räcker för tal)
+  const targetRate = 16000;
+  const down = downsamplePCM(pcm, recSampleRate, targetRate);
+  const wavBytes = encodeWAV(down, targetRate);
+  quizData.questions[i].audio = "data:audio/wav;base64," + base64FromBytes(wavBytes);
+  render();
+}
+
+function downsamplePCM(buffer, inRate, outRate){
+  if(outRate >= inRate) return buffer;
+  const ratio = inRate / outRate;
+  const newLen = Math.round(buffer.length / ratio);
+  const result = new Float32Array(newLen);
+  for(let i=0;i<newLen;i++){
+    const start = Math.round(i*ratio);
+    const end = Math.round((i+1)*ratio);
+    let sum=0, count=0;
+    for(let j=start;j<end && j<buffer.length;j++){ sum+=buffer[j]; count++; }
+    result[i] = count ? sum/count : (buffer[Math.min(start,buffer.length-1)] || 0);
+  }
+  return result;
+}
+
+function encodeWAV(samples, sampleRate){
+  const bytesPerSample = 2;
+  const buffer = new ArrayBuffer(44 + samples.length*bytesPerSample);
+  const view = new DataView(buffer);
+  function writeStr(o,s){ for(let k=0;k<s.length;k++) view.setUint8(o+k, s.charCodeAt(k)); }
+  writeStr(0,"RIFF");
+  view.setUint32(4, 36 + samples.length*bytesPerSample, true);
+  writeStr(8,"WAVE");
+  writeStr(12,"fmt ");
+  view.setUint32(16,16,true);
+  view.setUint16(20,1,true);              // PCM
+  view.setUint16(22,1,true);              // 1 kanal (mono)
+  view.setUint32(24,sampleRate,true);
+  view.setUint32(28,sampleRate*bytesPerSample,true);
+  view.setUint16(32,bytesPerSample,true);
+  view.setUint16(34,16,true);             // 16 bitar
+  writeStr(36,"data");
+  view.setUint32(40,samples.length*bytesPerSample,true);
+  let o=44;
+  for(let i=0;i<samples.length;i++,o+=2){
+    let s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(o, s<0 ? s*0x8000 : s*0x7FFF, true);
+  }
+  return new Uint8Array(buffer);
+}
+
+function base64FromBytes(bytes){
+  let binary = "";
+  const chunk = 0x8000;
+  for(let i=0;i<bytes.length;i+=chunk){
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  }
+  return btoa(binary);
 }
 
 function playRec(i){
@@ -533,9 +705,13 @@ function importJSON(){
         quizData = {
           title: raw.title || "",
           questions: (raw.questions || []).map(s => ({
-            text: s.text || "",
-            img: s.img || "",
-            audio: s.audio || ""
+            text:    s.text    || "",
+            img:     s.img     || "",
+            audio:   s.audio   || "",
+            answer1: s.answer1 || "",
+            answerX: s.answerX || "",
+            answer2: s.answer2 || "",
+            correct: s.correct || "1"
           }))
         };
         document.getElementById("title").value = quizData.title;
@@ -648,7 +824,7 @@ function dlQRpdf() {
 /* ===== LADDA NER PDF ===== */
 function downloadPDF(){
   updateData();
-  if(!quizData.title && !quizData.questions.some(s=>s.text||s.img)){
+  if(!quizData.title && !quizData.questions.some(s=>s.text||s.img||s.answer1)){
     alert("Checklistan är tom.");return;
   }
   function getImgDims(dataUrl,maxW,maxH){
@@ -675,7 +851,7 @@ function downloadPDF(){
     doc.setFontSize(18);doc.setFont("helvetica","bold");doc.setTextColor(40,40,40);
     doc.text(quizData.title||"Checklista",pageW/2,14,{align:"center"});
     y=28;
-    var questions=quizData.questions.filter(function(s){return s.text||s.img;});
+    var questions=quizData.questions.filter(function(s){return s.text||s.img||s.answer1;});
     var dimPromises=questions.map(function(s){
       if(!s.img)return Promise.resolve(null);
       return getImgDims(s.img,50,45);
@@ -683,29 +859,68 @@ function downloadPDF(){
     Promise.all(dimPromises).then(function(dims){
       for(var i=0;i<questions.length;i++){
         var s=questions[i],dim=dims[i];
-        var imgH=dim?dim.h:0;
-        var textLines=s.text?doc.splitTextToSize((i+1)+". "+s.text,contentW-22):[];
-        var blockH=Math.max(imgH,textLines.length*7)+12;
+        var imgW=dim?dim.w:0,imgH=dim?dim.h:0;
+        // Frågetext (fetstil), lämna plats för ev. bild till höger
+        doc.setFontSize(12);doc.setFont("helvetica","bold");
+        var qLines=doc.splitTextToSize((i+1)+". "+(s.text||""), contentW-(dim?imgW+6:0));
+        var qH=qLines.length*6;
+        // Svarsalternativ
+        var opts=[];
+        if(s.answer1) opts.push("1. "+s.answer1);
+        if(s.answerX) opts.push("X. "+s.answerX);
+        if(s.answer2) opts.push("2. "+s.answer2);
+        var headH=Math.max(imgH,qH);
+        var blockH=headH + opts.length*9 + 12;
         if(y+blockH>pageH-margin){doc.addPage();y=margin;}
-        // Checkbox
-        doc.setDrawColor(80,80,80);doc.setLineWidth(0.5);
-        doc.roundedRect(margin,y+2,8,8,1,1);
-        // Bild
+        // Bild till höger
         if(s.img&&dim){
-          try{doc.addImage(s.img,"JPEG",margin+12,y,dim.w,dim.h);}catch(e){}
+          try{doc.addImage(s.img,"JPEG",pageW-margin-imgW,y,imgW,imgH);}catch(e){}
         }
-        // Text
-        if(textLines.length>0){
-          var tx=dim?margin+12+dim.w+4:margin+12;
-          doc.setFontSize(12);doc.setFont("helvetica","normal");doc.setTextColor(40,40,40);
-          doc.text(textLines,tx,y+8);
+        // Frågetext
+        doc.setFontSize(12);doc.setFont("helvetica","bold");doc.setTextColor(40,40,40);
+        doc.text(qLines,margin,y+5);
+        // Svarsalternativ med kryssruta
+        var oy=y+headH+6;
+        doc.setFontSize(11);doc.setFont("helvetica","normal");doc.setTextColor(40,40,40);
+        for(var k=0;k<opts.length;k++){
+          doc.setDrawColor(80,80,80);doc.setLineWidth(0.4);
+          doc.roundedRect(margin,oy-4,5,5,1,1);
+          var optLines=doc.splitTextToSize(opts[k],contentW-9);
+          doc.text(optLines,margin+9,oy);
+          oy+=Math.max(9,optLines.length*6);
         }
-        y+=blockH;
+        y=oy+4;
         doc.setDrawColor(220,220,220);doc.setLineWidth(0.3);
         doc.line(margin,y-2,pageW-margin,y-2);
+        y+=4;
       }
       doc.setFontSize(8);doc.setTextColor(160,160,160);
       doc.text("Daglig Verksamhet – Digital Tipsrunda",pageW/2,pageH-8,{align:"center"});
+
+      // ===== FACIT på egen sida =====
+      var hasAnswers=questions.some(function(s){return s.answer1||s.answerX||s.answer2;});
+      if(hasAnswers){
+        doc.addPage();
+        var fy=margin;
+        doc.setFillColor(245,245,245);doc.rect(0,0,pageW,22,"F");
+        doc.setFontSize(18);doc.setFont("helvetica","bold");doc.setTextColor(40,40,40);
+        doc.text("Facit – "+(quizData.title||"Tipsrunda"),pageW/2,14,{align:"center"});
+        fy=32;
+        doc.setFontSize(12);doc.setFont("helvetica","normal");doc.setTextColor(40,40,40);
+        for(var j=0;j<questions.length;j++){
+          var fs=questions[j];
+          var c=fs.correct||"1";
+          var ans=c==="X"?fs.answerX:(c==="2"?fs.answer2:fs.answer1);
+          var line=(j+1)+". Rätt svar: "+c+(ans?" – "+ans:"");
+          var ll=doc.splitTextToSize(line,contentW);
+          if(fy+ll.length*7>pageH-margin){doc.addPage();fy=margin;}
+          doc.text(ll,margin,fy);
+          fy+=ll.length*7+3;
+        }
+        doc.setFontSize(8);doc.setTextColor(160,160,160);
+        doc.text("Daglig Verksamhet – Digital Tipsrunda (facit)",pageW/2,pageH-8,{align:"center"});
+      }
+
       var name=(quizData.title||"checklista").replace(/[^a-zA-Z0-9 ]/g,"_");
       doc.save(name+".pdf");
     });
@@ -732,98 +947,5 @@ function downloadPDF(){
     <button class="qr-cl" onclick="document.getElementById('qr-modal').classList.remove('on')">Stäng</button>
   </div>
 </div>
-
-<script>
-/* ===== NY QUIZ-LÄNK ===== */
-async function createLink(){
-
-updateData();
-
-const id=Date.now();
-const basePath="quiz-"+id;
-const repo="Sukrutaraj/checklist-pages";
-
-let questionsJson = JSON.stringify(quizData.questions);
-
-let sharedHtml=`
-<!DOCTYPE html>
-<html lang="sv">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
-<style>
-body{font-family:sans-serif;background:#f5f5f5;text-align:center;padding:20px;max-width:800px;margin:auto;}
-.card{background:white;padding:25px;border-radius:20px;}
-button{display:block;width:100%;padding:18px;margin-top:15px;border:none;border-radius:15px;background:#eee;font-size:18px;}
-</style>
-</head>
-<body>
-<div class="card">
-<h1>${quizData.title}</h1>
-<h2 id="counter"></h2>
-<div id="question"></div>
-<div id="answers"></div>
-</div>
-
-<script>
-
-let questions=`+questionsJson+`;
-let current=0;
-let points=0;
-
-function renderQuestion(){
-
-let q=questions[current];
-
-document.getElementById("counter").innerHTML=
-"Fråga "+(current+1)+" av "+questions.length;
-
-document.getElementById("question").innerHTML=
-"<h2>"+q.text+"</h2>";
-
-document.getElementById("answers").innerHTML=
-"<button onclick=\"checkAnswer('1')\">1. "+q.answer1+"</button>"+
-"<button onclick=\"checkAnswer('X')\">X. "+q.answerX+"</button>"+
-"<button onclick=\"checkAnswer('2')\">2. "+q.answer2+"</button>";
-
-}
-
-function checkAnswer(a){
-
-if(a===questions[current].correct) points++;
-
-current++;
-
-if(current>=questions.length){
-
-document.querySelector(".card").innerHTML=
-"<h1>Klart!</h1><h2>"+points+" av "+questions.length+" rätt</h2>";
-
-}
-else renderQuestion();
-
-}
-
-renderQuestion();
-
-<\/script>
-</body>
-</html>
-`;
-
-await uploadFile(
-basePath+".html",
-btoa(unescape(encodeURIComponent(sharedHtml))),
-repo
-);
-
-let url="https://sukrutaraj.github.io/checklist-pages/"+basePath+".html";
-
-navigator.clipboard.writeText(url);
-
-showQR(url,quizData.title);
-
-}
-</script>
 </body>
 </html>
